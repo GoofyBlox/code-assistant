@@ -4,11 +4,17 @@ const inputEl = document.getElementById('input');
 const sendBtn = document.getElementById('send');
 const previewPane = document.getElementById('preview-pane');
 const previewFrame = document.getElementById('preview-frame');
+const fileInput = document.getElementById('file-input');
+const fileChip = document.getElementById('file-chip');
+const fileChipName = document.getElementById('file-chip-name');
 
 let history = [];
 let sessions = [];
 let currentTitle = null;
 let lastPreviewCode = '';
+let pendingFile = null;
+
+const ALLOWED = ['png','jpg','jpeg','rar','zip','js','ts','py','html','css','txt','md','json','log'];
 
 try { sessions = JSON.parse(localStorage.getItem('sgpt_sessions') || '[]'); } catch(e) {}
 
@@ -24,6 +30,31 @@ inputEl.addEventListener('keydown', e => {
 
 const isMobile = () => 'ontouchstart' in window || window.innerWidth <= 768;
 
+// ── FILE UPLOAD ──
+function openFilePicker() { fileInput.click(); }
+
+fileInput.addEventListener('change', () => {
+  const file = fileInput.files[0];
+  if (!file) return;
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (!ALLOWED.includes(ext)) {
+    alert('File type not allowed: .' + ext);
+    fileInput.value = '';
+    return;
+  }
+  pendingFile = file;
+  fileChipName.textContent = file.name;
+  fileChip.style.display = 'flex';
+  fileInput.value = '';
+});
+
+function removeFile() {
+  pendingFile = null;
+  fileChip.style.display = 'none';
+  fileChipName.textContent = '';
+}
+
+// ── SUGGEST ──
 function suggest(btn) {
   const b = btn.querySelector('b');
   inputEl.value = btn.textContent.replace(b ? b.textContent : '', '').trim();
@@ -32,6 +63,7 @@ function suggest(btn) {
   if (!isMobile()) inputEl.focus();
 }
 
+// ── SIDEBAR ──
 function toggleSidebar() {
   document.getElementById('sidebar').classList.toggle('open');
   document.getElementById('overlay').classList.toggle('show');
@@ -45,7 +77,7 @@ function emptyHTML() {
   return '<div id="empty">' +
     '<div class="empty-icon">🐍</div>' +
     '<div class="empty-title">Snake<em>GPT</em> AI</div>' +
-    '<div class="empty-sub">Elite AI code assistant. Write, debug, explain — and preview HTML/CSS/JS live.</div>' +
+    '<div class="empty-sub">Elite AI code assistant. Write, debug, explain — upload files and preview HTML live.</div>' +
     '<div class="sugs">' +
     '<button class="sug" onclick="suggest(this)"><b>Generate</b>Write a Python web scraper</button>' +
     '<button class="sug" onclick="suggest(this)"><b>Explain</b>How does async/await work?</button>' +
@@ -57,24 +89,23 @@ function emptyHTML() {
 function newChat() {
   history = []; currentTitle = null;
   chatInner.innerHTML = emptyHTML();
+  removeFile();
   closePreview();
   closeSidebar();
 }
 
 function removeEmpty() { const e = document.getElementById('empty'); if(e) e.remove(); }
 
-// detect language from highlight.js class
+// ── LANG / PREVIEW ──
 function getLang(block) {
   const cls = [...block.classList].find(c => c.startsWith('language-'));
   return cls ? cls.replace('language-', '') : '';
 }
 
-// only HTML triggers preview button
 function isPreviewable(lang) {
   return ['html', 'htm'].includes(lang.toLowerCase());
 }
 
-// collect ALL css + js blocks from the same AI message bubble
 function buildFullPreview(htmlCode, bubble) {
   const cssBlocks = [];
   const jsBlocks = [];
@@ -84,27 +115,15 @@ function buildFullPreview(htmlCode, bubble) {
     if (lang === 'css') cssBlocks.push(src);
     if (lang === 'js' || lang === 'javascript') jsBlocks.push(src);
   });
-
   let base = htmlCode;
-
   if (cssBlocks.length) {
     const styleTag = '<style>\n' + cssBlocks.join('\n') + '\n</style>';
-    if (base.includes('</head>')) {
-      base = base.replace('</head>', styleTag + '\n</head>');
-    } else {
-      base = styleTag + '\n' + base;
-    }
+    base = base.includes('</head>') ? base.replace('</head>', styleTag + '\n</head>') : styleTag + '\n' + base;
   }
-
   if (jsBlocks.length) {
     const scriptTag = '<script>\n' + jsBlocks.join('\n') + '\n<\/script>';
-    if (base.includes('</body>')) {
-      base = base.replace('</body>', scriptTag + '\n</body>');
-    } else {
-      base = base + '\n' + scriptTag;
-    }
+    base = base.includes('</body>') ? base.replace('</body>', scriptTag + '\n</body>') : base + '\n' + scriptTag;
   }
-
   return base;
 }
 
@@ -126,10 +145,52 @@ function closePreview() {
   lastPreviewCode = '';
 }
 
-function addMsg(role, content) {
+// ── DOWNLOAD DETECTION ──
+// AI wraps downloadable content in DOWNLOAD_FILE[name] ... END_DOWNLOAD_FILE
+function parseDownloads(text) {
+  const regex = /DOWNLOAD_FILE\[([^\]]+)\]\n([\s\S]*?)END_DOWNLOAD_FILE/g;
+  const downloads = [];
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    downloads.push({ filename: match[1], content: match[2] });
+  }
+  // strip markers from visible text
+  const clean = text.replace(/DOWNLOAD_FILE\[[^\]]+\]\n[\s\S]*?END_DOWNLOAD_FILE/g, '').trim();
+  return { clean, downloads };
+}
+
+async function triggerDownload(filename, content) {
+  try {
+    const res = await fetch('/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename, content })
+    });
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch(e) {
+    console.error('Download failed:', e);
+  }
+}
+
+function makeDownloadBtn(filename, content) {
+  const btn = document.createElement('button');
+  btn.className = 'download-btn';
+  btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>' + filename;
+  btn.onclick = () => triggerDownload(filename, content);
+  return btn;
+}
+
+// ── ADD MESSAGE ──
+function addMsg(role, rawContent) {
   removeEmpty();
   const msg = document.createElement('div');
-  msg.className = `msg ${role}`;
+  msg.className = 'msg ' + role;
 
   const av = document.createElement('div');
   av.className = 'av';
@@ -139,8 +200,10 @@ function addMsg(role, content) {
   bubble.className = 'bubble';
 
   if (role === 'ai') {
-    bubble.innerHTML = marked.parse(content);
+    const { clean, downloads } = parseDownloads(rawContent);
+    bubble.innerHTML = marked.parse(clean);
 
+    // code block toolbars
     bubble.querySelectorAll('pre code').forEach(block => {
       hljs.highlightElement(block);
       const lang = getLang(block);
@@ -167,6 +230,14 @@ function addMsg(role, content) {
       };
       actions.appendChild(copyBtn);
 
+      // download code file
+      const dlBtn = document.createElement('button');
+      dlBtn.className = 'code-btn';
+      dlBtn.textContent = '↓ Save';
+      const ext = lang || 'txt';
+      dlBtn.onclick = () => triggerDownload('snakegpt_code.' + ext, code);
+      actions.appendChild(dlBtn);
+
       if (isPreviewable(lang)) {
         const prevBtn = document.createElement('button');
         prevBtn.className = 'code-btn preview-trigger';
@@ -179,8 +250,18 @@ function addMsg(role, content) {
       toolbar.appendChild(actions);
       pre.insertBefore(toolbar, pre.firstChild);
     });
+
+    // download buttons for DOWNLOAD_FILE markers
+    if (downloads.length) {
+      const dlWrap = document.createElement('div');
+      dlWrap.className = 'dl-wrap';
+      downloads.forEach(d => dlWrap.appendChild(makeDownloadBtn(d.filename, d.content)));
+      bubble.appendChild(dlWrap);
+    }
+
   } else {
-    bubble.textContent = content;
+    // user message — show file chip if file was attached
+    bubble.textContent = rawContent;
   }
 
   msg.appendChild(av);
@@ -201,6 +282,7 @@ function addThinking() {
   chatEl.scrollTop = chatEl.scrollHeight;
 }
 
+// ── HISTORY ──
 function saveSession(title) {
   try {
     const idx = sessions.findIndex(s => s.title === title);
@@ -218,17 +300,12 @@ function renderHistory() {
   sessions.forEach((s, idx) => {
     const item = document.createElement('div');
     item.className = 'h-item' + (s.title === currentTitle ? ' active' : '');
-
     item.innerHTML =
       '<svg class="h-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>' +
       '<div class="h-item-label"><span class="h-title">' + s.title + '</span></div>' +
       '<div class="h-item-actions">' +
-        '<button class="h-act ren" title="Rename">' +
-          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>' +
-        '</button>' +
-        '<button class="h-act del" title="Delete">' +
-          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>' +
-        '</button>' +
+        '<button class="h-act ren" title="Rename"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>' +
+        '<button class="h-act del" title="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg></button>' +
       '</div>';
 
     item.addEventListener('click', (e) => {
@@ -277,26 +354,43 @@ function renderHistory() {
   });
 }
 
+// ── SEND ──
 async function sendMsg() {
   const text = inputEl.value.trim();
-  if (!text || sendBtn.disabled) return;
+  if (!text && !pendingFile) return;
+  if (sendBtn.disabled) return;
+
   inputEl.value = ''; inputEl.style.height = 'auto';
   sendBtn.disabled = true;
 
-  addMsg('user', text);
-  history.push({ role: 'user', content: text });
+  const displayText = text || ('Uploaded: ' + (pendingFile ? pendingFile.name : ''));
+  addMsg('user', displayText);
+  if (!currentTitle) currentTitle = displayText.slice(0, 42) + (displayText.length > 42 ? '…' : '');
+
+  // add to history (text only — file content added server-side)
+  if (text) history.push({ role: 'user', content: text });
+
   addThinking();
 
-  if (!currentTitle) currentTitle = text.slice(0, 42) + (text.length > 42 ? '…' : '');
-
   try {
-    const res = await fetch('/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: history })
-    });
+    let res;
+    if (pendingFile) {
+      const fd = new FormData();
+      fd.append('file', pendingFile);
+      fd.append('messages', JSON.stringify(text ? [...history.slice(0, -1)] : history));
+      if (text) fd.append('userText', text);
+      res = await fetch('/chat', { method: 'POST', body: fd });
+    } else {
+      res = await fetch('/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: history })
+      });
+    }
+
     const data = await res.json();
     document.getElementById('thinking')?.remove();
+
     if (data.error) {
       addMsg('ai', '**Error:** ' + data.error);
     } else {
@@ -309,6 +403,7 @@ async function sendMsg() {
     addMsg('ai', '**Connection error.** Please try again.');
   }
 
+  removeFile();
   sendBtn.disabled = false;
   if (!isMobile()) inputEl.focus();
 }
