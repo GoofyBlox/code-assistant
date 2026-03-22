@@ -71,13 +71,22 @@
       </div>
 
       <div id="input-wrap">
+        <div id="file-chip" class="file-chip">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <span class="file-chip-name" id="file-chip-name"></span>
+          <button class="file-chip-remove" onclick="removeFile()">✕</button>
+        </div>
         <div class="input-box">
+          <input type="file" id="file-input" accept=".png,.jpg,.jpeg,.rar,.zip,.js,.ts,.py,.html,.css,.txt,.md,.json,.log">
+          <button class="upload-btn" onclick="openFilePicker()" title="Attach file">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          </button>
           <textarea id="input" placeholder="Ask SnakeGPT anything about code..." rows="1"></textarea>
           <button id="send" onclick="sendMsg()">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
           </button>
         </div>
-        <div class="input-hint">Enter to send &nbsp;·&nbsp; Shift+Enter for new line</div>
+        <div class="input-hint">Enter to send &nbsp;·&nbsp; Shift+Enter for new line &nbsp;·&nbsp; 📎 attach files</div>
       </div>
     </div>
 
