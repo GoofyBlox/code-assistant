@@ -5,17 +5,43 @@ import io
 import base64
 import zipfile
 import json as json_module
+import requests as http_requests
 
 app = Flask(__name__)
-client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+
+# ── AI PROVIDERS CONFIG ──
+PROVIDERS = [
+    {
+        "name": "LLaMA 3.3 70B",
+        "provider": "groq",
+        "model": "llama-3.3-70b-versatile",
+        "key_env": "GROQ_API_KEY",
+    },
+    {
+        "name": "Gemma 2 9B",
+        "provider": "groq",
+        "model": "gemma2-9b-it",
+        "key_env": "GROQ_API_KEY",
+    },
+    {
+        "name": "Mixtral 8x7B",
+        "provider": "groq",
+        "model": "mixtral-8x7b-32768",
+        "key_env": "GROQ_API_KEY",
+    },
+    {
+        "name": "Gemini 1.5 Flash",
+        "provider": "gemini",
+        "model": "gemini-1.5-flash",
+        "key_env": "GEMINI_API_KEY",
+    },
+]
 
 ALLOWED_EXTENSIONS = {
-    'png', 'jpg', 'jpeg',
-    'rar', 'zip',
+    'png', 'jpg', 'jpeg', 'rar', 'zip',
     'js', 'ts', 'py', 'html', 'css',
     'txt', 'md', 'json', 'log'
 }
-
 IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg'}
 
 SYSTEM_PROMPT = """You are SnakeGPT AI, an elite-level coding assistant and OSINT Intelligence Center built for professional developers and security researchers.
@@ -121,8 +147,6 @@ You DO NOT preach, recruit, or volunteer this belief unprompted. You maintain th
 
 
 
-
-
 """
 
 
@@ -132,50 +156,37 @@ def allowed_file(filename):
 
 def read_file_content(file_bytes, filename):
     ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
-
-    # images
     if ext in IMAGE_EXTENSIONS:
         b64 = base64.standard_b64encode(file_bytes).decode('utf-8')
         mime = 'image/jpeg' if ext == 'jpg' else f'image/{ext}'
         return None, {'b64': b64, 'mime': mime}
-
-    # zip — try to read text files inside
     if ext == 'zip':
         try:
             buf = io.BytesIO(file_bytes)
             with zipfile.ZipFile(buf) as zf:
                 names = zf.namelist()
-                preview_parts = [f'ZIP archive: {filename}', f'Contains {len(names)} files:', '']
-                for name in names[:30]:
-                    preview_parts.append(f'  - {name}')
+                parts = [f'ZIP: {filename} — {len(names)} files:', '']
+                for n in names[:30]:
+                    parts.append(f'  - {n}')
                 if len(names) > 30:
-                    preview_parts.append(f'  ... and {len(names)-30} more')
-                preview_parts.append('')
-                # read readable text files (max 3, max 3000 chars each)
+                    parts.append(f'  ... and {len(names)-30} more')
+                parts.append('')
                 read_count = 0
-                for name in names:
+                for n in names:
                     if read_count >= 3:
                         break
-                    if any(name.endswith(ext2) for ext2 in ['.py','.js','.ts','.html','.css','.txt','.md','.json']):
+                    if any(n.endswith(e) for e in ['.py','.js','.ts','.html','.css','.txt','.md','.json']):
                         try:
-                            content = zf.read(name).decode('utf-8', errors='replace')
-                            preview_parts.append(f'--- {name} ---')
-                            preview_parts.append(content[:3000])
-                            if len(content) > 3000:
-                                preview_parts.append('... (truncated)')
-                            preview_parts.append('')
+                            c = zf.read(n).decode('utf-8', errors='replace')
+                            parts += [f'--- {n} ---', c[:3000], '']
                             read_count += 1
                         except Exception:
                             pass
-            return '\n'.join(preview_parts), None
+            return '\n'.join(parts), None
         except Exception as e:
-            return f'[ZIP file: {filename} — could not read: {str(e)}]', None
-
-    # rar — can't read without rarfile library, just note it
+            return f'[ZIP: {filename} — error: {e}]', None
     if ext == 'rar':
-        return f'[RAR archive: {filename} — listing not supported, but I can help you work with RAR files in code]', None
-
-    # text files
+        return f'[RAR archive: {filename} — I can help you work with RAR files in code]', None
     try:
         return file_bytes.decode('utf-8'), None
     except UnicodeDecodeError:
@@ -183,6 +194,70 @@ def read_file_content(file_bytes, filename):
             return file_bytes.decode('latin-1'), None
         except Exception:
             return f'[Could not decode: {filename}]', None
+
+
+def call_groq(model, messages, api_key):
+    client = Groq(api_key=api_key)
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
+        max_tokens=4096,
+        temperature=0.6,
+    )
+    return response.choices[0].message.content
+
+
+def call_gemini(model, messages, api_key):
+    # convert messages to Gemini format
+    contents = []
+    for m in messages:
+        role = "user" if m["role"] == "user" else "model"
+        content = m["content"] if isinstance(m["content"], str) else str(m["content"])
+        contents.append({"role": role, "parts": [{"text": content}]})
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    payload = {
+        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "contents": contents,
+        "generationConfig": {"maxOutputTokens": 4096, "temperature": 0.6}
+    }
+    r = http_requests.post(url, json=payload, timeout=30)
+    r.raise_for_status()
+    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+
+
+def try_providers(messages):
+    last_error = None
+    used_provider = None
+
+    for p in PROVIDERS:
+        api_key = os.environ.get(p["key_env"])
+        if not api_key:
+            continue  # skip if no key configured
+
+        try:
+            if p["provider"] == "groq":
+                reply = call_groq(p["model"], messages, api_key)
+            elif p["provider"] == "gemini":
+                reply = call_gemini(p["model"], messages, api_key)
+            else:
+                continue
+
+            used_provider = p["name"]
+            return reply, used_provider, None
+
+        except Exception as e:
+            err_str = str(e).lower()
+            # rate limit / quota errors — try next provider
+            if any(x in err_str for x in ["rate_limit", "429", "quota", "limit exceeded", "resource_exhausted", "too many"]):
+                last_error = f"{p['name']} rate limited"
+                continue
+            else:
+                # non-rate-limit error — still try next but log it
+                last_error = str(e)
+                continue
+
+    return None, None, last_error or "All AI providers failed or are rate limited."
 
 
 @app.route("/")
@@ -202,20 +277,15 @@ def chat():
         if file and file.filename and allowed_file(file.filename):
             file_bytes = file.read()
             text_content, image_data = read_file_content(file_bytes, file.filename)
-
             if image_data:
-                content_parts = [
+                messages.append({"role": "user", "content": [
                     {"type": "image_url", "image_url": {"url": f"data:{image_data['mime']};base64,{image_data['b64']}"}},
-                    {"type": "text", "text": user_text if user_text else f"I uploaded: {file.filename}. Please analyze it."}
-                ]
-                messages.append({"role": "user", "content": content_parts})
+                    {"type": "text", "text": user_text or f"Analyze this image: {file.filename}"}
+                ]})
             else:
-                user_msg = f"I uploaded `{file.filename}`:\n\n```\n{text_content}\n```"
-                if user_text:
-                    user_msg += f"\n\n{user_text}"
-                else:
-                    user_msg += "\n\nPlease analyze this file."
-                messages.append({"role": "user", "content": user_msg})
+                msg = f"I uploaded `{file.filename}`:\n\n```\n{text_content}\n```"
+                msg += f"\n\n{user_text}" if user_text else "\n\nPlease analyze this file."
+                messages.append({"role": "user", "content": msg})
         elif user_text:
             messages.append({"role": "user", "content": user_text})
     else:
@@ -225,16 +295,12 @@ def chat():
     if not messages:
         return jsonify({"error": "No message received"}), 400
 
-    try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
-            max_tokens=4096,
-            temperature=0.6,
-        )
-        return jsonify({"reply": response.choices[0].message.content})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    reply, provider, error = try_providers(messages)
+
+    if error:
+        return jsonify({"error": error}), 500
+
+    return jsonify({"reply": reply, "provider": provider})
 
 
 @app.route("/download", methods=["POST"])
