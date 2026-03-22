@@ -1,4 +1,3 @@
-const chatInner = document.getElementById('chat-inner');
 const chatEl = document.getElementById('chat');
 const inputEl = document.getElementById('input');
 const sendBtn = document.getElementById('send');
@@ -29,6 +28,11 @@ inputEl.addEventListener('keydown', e => {
 });
 
 const isMobile = () => 'ontouchstart' in window || window.innerWidth <= 768;
+
+// ── HELPER: always get fresh reference ──
+function getChatInner() {
+  return document.getElementById('chat-inner');
+}
 
 // ── FILE UPLOAD ──
 function openFilePicker() { fileInput.click(); }
@@ -86,15 +90,24 @@ function emptyHTML() {
     '</div></div>';
 }
 
+// ── NEW CHAT ──
 function newChat() {
-  history = []; currentTitle = null;
-  chatInner.innerHTML = emptyHTML();
+  history = [];
+  currentTitle = null;
+  // Always get a fresh DOM reference instead of using stale variable
+  const container = document.getElementById('chat-inner');
+  container.innerHTML = emptyHTML();
   removeFile();
   closePreview();
   closeSidebar();
+  renderHistory();
 }
 
-function removeEmpty() { const e = document.getElementById('empty'); if(e) e.remove(); }
+function removeEmpty() {
+  // Always query fresh — avoids stale reference bug
+  const e = document.getElementById('empty');
+  if (e) e.remove();
+}
 
 // ── LANG / PREVIEW ──
 function getLang(block) {
@@ -146,7 +159,6 @@ function closePreview() {
 }
 
 // ── DOWNLOAD DETECTION ──
-// AI wraps downloadable content in DOWNLOAD_FILE[name] ... END_DOWNLOAD_FILE
 function parseDownloads(text) {
   const regex = /DOWNLOAD_FILE\[([^\]]+)\]\n([\s\S]*?)END_DOWNLOAD_FILE/g;
   const downloads = [];
@@ -154,7 +166,6 @@ function parseDownloads(text) {
   while ((match = regex.exec(text)) !== null) {
     downloads.push({ filename: match[1], content: match[2] });
   }
-  // strip markers from visible text
   const clean = text.replace(/DOWNLOAD_FILE\[[^\]]+\]\n[\s\S]*?END_DOWNLOAD_FILE/g, '').trim();
   return { clean, downloads };
 }
@@ -189,6 +200,9 @@ function makeDownloadBtn(filename, content) {
 // ── ADD MESSAGE ──
 function addMsg(role, rawContent) {
   removeEmpty();
+  // Always use fresh DOM reference
+  const chatInner = getChatInner();
+
   const msg = document.createElement('div');
   msg.className = 'msg ' + role;
 
@@ -203,7 +217,6 @@ function addMsg(role, rawContent) {
     const { clean, downloads } = parseDownloads(rawContent);
     bubble.innerHTML = marked.parse(clean);
 
-    // code block toolbars
     bubble.querySelectorAll('pre code').forEach(block => {
       hljs.highlightElement(block);
       const lang = getLang(block);
@@ -230,7 +243,6 @@ function addMsg(role, rawContent) {
       };
       actions.appendChild(copyBtn);
 
-      // download code file
       const dlBtn = document.createElement('button');
       dlBtn.className = 'code-btn';
       dlBtn.textContent = '↓ Save';
@@ -251,7 +263,6 @@ function addMsg(role, rawContent) {
       pre.insertBefore(toolbar, pre.firstChild);
     });
 
-    // download buttons for DOWNLOAD_FILE markers
     if (downloads.length) {
       const dlWrap = document.createElement('div');
       dlWrap.className = 'dl-wrap';
@@ -260,7 +271,6 @@ function addMsg(role, rawContent) {
     }
 
   } else {
-    // user message — show file chip if file was attached
     bubble.textContent = rawContent;
   }
 
@@ -272,6 +282,8 @@ function addMsg(role, rawContent) {
 
 function addThinking() {
   removeEmpty();
+  const chatInner = getChatInner();
+
   const msg = document.createElement('div');
   msg.className = 'msg ai'; msg.id = 'thinking';
   const av = document.createElement('div'); av.className = 'av'; av.textContent = 'AI';
@@ -310,10 +322,13 @@ function renderHistory() {
 
     item.addEventListener('click', (e) => {
       if (e.target.closest('.h-act')) return;
-      history = s.history; currentTitle = s.title;
-      chatInner.innerHTML = '';
+      history = s.history;
+      currentTitle = s.title;
+      const container = document.getElementById('chat-inner');
+      container.innerHTML = '';
       history.forEach(m => addMsg(m.role === 'assistant' ? 'ai' : 'user', m.content));
-      renderHistory(); closeSidebar();
+      renderHistory();
+      closeSidebar();
     });
 
     item.querySelector('.ren').addEventListener('click', (e) => {
@@ -340,8 +355,10 @@ function renderHistory() {
       item.classList.add('deleting');
       setTimeout(() => {
         if (currentTitle === s.title) {
-          currentTitle = null; history = [];
-          chatInner.innerHTML = emptyHTML();
+          currentTitle = null;
+          history = [];
+          const container = document.getElementById('chat-inner');
+          container.innerHTML = emptyHTML();
           closePreview();
         }
         sessions.splice(idx, 1);
@@ -367,7 +384,6 @@ async function sendMsg() {
   addMsg('user', displayText);
   if (!currentTitle) currentTitle = displayText.slice(0, 42) + (displayText.length > 42 ? '…' : '');
 
-  // add to history (text only — file content added server-side)
   if (text) history.push({ role: 'user', content: text });
 
   addThinking();
