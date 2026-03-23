@@ -9,51 +9,39 @@ import requests as http_requests
 app = Flask(__name__)
 
 # ── AI PROVIDERS CONFIG ──
-# 4 Together AI (free forever) + 1 OpenRouter + 1 Gemini 2.5 Pro
-# Get Together AI keys: api.together.ai → Settings → API Keys
-# Get OpenRouter key: openrouter.ai → Keys
-# Get Gemini key: aistudio.google.com → Get API Key
+# All OpenRouter free models — truly free, no credit card needed
+# Get keys at: openrouter.ai → Keys
+# Create multiple accounts to get more keys — each key is unique
 PROVIDERS = [
-    # ── TOGETHER AI (free forever, never expires) ──
-    {
-        "name": "LLaMA 3.3 70B",
-        "provider": "together",
-        "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
-        "key_env": "TOGETHER_API_KEY_1",
-    },
-    {
-        "name": "DeepSeek R1",
-        "provider": "together",
-        "model": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free",
-        "key_env": "TOGETHER_API_KEY_2",
-    },
-    {
-        "name": "Qwen 2.5 72B",
-        "provider": "together",
-        "model": "Qwen/Qwen2.5-72B-Instruct-Turbo",
-        "key_env": "TOGETHER_API_KEY_3",
-    },
-    {
-        "name": "Qwen 2.5 Coder 32B",
-        "provider": "together",
-        "model": "Qwen/Qwen2.5-Coder-32B-Instruct",
-        "key_env": "TOGETHER_API_KEY_4",
-    },
-
-    # ── OPENROUTER (free model) ──
     {
         "name": "DeepSeek V3",
         "provider": "openrouter",
         "model": "deepseek/deepseek-chat-v3-0324:free",
-        "key_env": "OPENROUTER_API_KEY",
+        "key_env": "OPENROUTER_API_KEY_1",
     },
-
-    # ── TOGETHER AI extra ──
     {
-        "name": "LLaMA 3.1 405B",
-        "provider": "together",
-        "model": "meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo",
-        "key_env": "TOGETHER_API_KEY_5",
+        "name": "DeepSeek R1",
+        "provider": "openrouter",
+        "model": "deepseek/deepseek-r1:free",
+        "key_env": "OPENROUTER_API_KEY_2",
+    },
+    {
+        "name": "LLaMA 4 Maverick",
+        "provider": "openrouter",
+        "model": "meta-llama/llama-4-maverick:free",
+        "key_env": "OPENROUTER_API_KEY_3",
+    },
+    {
+        "name": "Qwen3 235B",
+        "provider": "openrouter",
+        "model": "qwen/qwen3-235b-a22b:free",
+        "key_env": "OPENROUTER_API_KEY_4",
+    },
+    {
+        "name": "Mistral Small 3.1 24B",
+        "provider": "openrouter",
+        "model": "mistralai/mistral-small-3.1-24b-instruct:free",
+        "key_env": "OPENROUTER_API_KEY_5",
     },
 ]
 
@@ -84,7 +72,7 @@ Include proper error handling, edge cases, and performance optimizations.
 
 Apply design patterns where appropriate to ensure maintainability.
 
-Add concise inline comments only when the logic isn't self-explanatory.
+Add concise inline comments only when the logic is not self-explanatory.
 
 OSINT Intelligence Capabilities
 
@@ -180,28 +168,6 @@ def read_file_content(file_bytes, filename):
             return f'[Could not decode: {filename}]', None
 
 
-# ── PROVIDER CALL FUNCTIONS ──
-
-def call_together(model, messages, api_key):
-    url = "https://api.together.xyz/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": model,
-        "messages": [{"role": "system", "content": SYSTEM_PROMPT}] + messages,
-        "max_tokens": 4096,
-        "temperature": 0.6,
-    }
-    r = http_requests.post(url, headers=headers, json=payload, timeout=30)
-    r.raise_for_status()
-    data = r.json()
-    if "error" in data:
-        raise Exception(data["error"].get("message", "Together AI error"))
-    return data["choices"][0]["message"]["content"]
-
-
 def call_openrouter(model, messages, api_key):
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
@@ -224,8 +190,6 @@ def call_openrouter(model, messages, api_key):
     return data["choices"][0]["message"]["content"]
 
 
-
-
 def try_providers(messages):
     last_error = None
 
@@ -235,13 +199,7 @@ def try_providers(messages):
             continue
 
         try:
-            if p["provider"] == "together":
-                reply = call_together(p["model"], messages, api_key)
-            elif p["provider"] == "openrouter":
-                reply = call_openrouter(p["model"], messages, api_key)
-            else:
-                continue
-
+            reply = call_openrouter(p["model"], messages, api_key)
             return reply, p["name"], None
 
         except Exception as e:
@@ -249,7 +207,7 @@ def try_providers(messages):
             if any(x in err_str for x in [
                 "rate_limit", "429", "quota", "limit exceeded",
                 "resource_exhausted", "too many", "overloaded",
-                "capacity", "503", "529"
+                "capacity", "503", "529", "402"
             ]):
                 last_error = f"{p['name']} rate limited"
                 continue
