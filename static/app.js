@@ -1,360 +1,429 @@
-from flask import Flask, request, jsonify, render_template, send_file
-import os
-import io
-import base64
-import zipfile
-import json as json_module
-import requests as http_requests
+const chatEl = document.getElementById('chat');
+const inputEl = document.getElementById('input');
+const sendBtn = document.getElementById('send');
+const previewPane = document.getElementById('preview-pane');
+const previewFrame = document.getElementById('preview-frame');
+const fileInput = document.getElementById('file-input');
+const fileChip = document.getElementById('file-chip');
+const fileChipName = document.getElementById('file-chip-name');
 
-app = Flask(__name__)
+let history = [];
+let sessions = [];
+let currentTitle = null;
+let lastPreviewCode = '';
+let pendingFile = null;
 
-# ── AI PROVIDERS CONFIG ──
-# 4 Together AI (free forever) + 1 Claude (Anthropic)
-# Get Together AI keys: api.together.ai → Settings → API Keys
-# Get Claude key: console.anthropic.com → API Keys
-PROVIDERS = [
-    # ── TOGETHER AI (free forever, never expires) ──
-    {
-        "name": "LLaMA 3.3 70B",
-        "provider": "together",
-        "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
-        "key_env": "TOGETHER_API_KEY_1",
-    },
-    {
-        "name": "DeepSeek R1",
-        "provider": "together",
-        "model": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free",
-        "key_env": "TOGETHER_API_KEY_2",
-    },
-    {
-        "name": "Qwen 2.5 72B",
-        "provider": "together",
-        "model": "Qwen/Qwen2.5-72B-Instruct-Turbo",
-        "key_env": "TOGETHER_API_KEY_3",
-    },
-    {
-        "name": "Qwen 2.5 Coder 32B",
-        "provider": "together",
-        "model": "Qwen/Qwen2.5-Coder-32B-Instruct",
-        "key_env": "TOGETHER_API_KEY_4",
-    },
+const ALLOWED = ['png','jpg','jpeg','rar','zip','js','ts','py','html','css','txt','md','json','log'];
 
-    # ── CLAUDE (Anthropic) ──
-    {
-        "name": "Claude Sonnet",
-        "provider": "claude",
-        "model": "claude-sonnet-4-6",
-        "key_env": "ANTHROPIC_API_KEY",
-    },
-]
+try { sessions = JSON.parse(localStorage.getItem('sgpt_sessions') || '[]'); } catch(e) {}
 
-ALLOWED_EXTENSIONS = {
-    'png', 'jpg', 'jpeg', 'rar', 'zip',
-    'js', 'ts', 'py', 'html', 'css',
-    'txt', 'md', 'json', 'log'
+marked.setOptions({ breaks: true });
+
+inputEl.addEventListener('input', () => {
+  inputEl.style.height = 'auto';
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 130) + 'px';
+});
+inputEl.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
+});
+
+const isMobile = () => 'ontouchstart' in window || window.innerWidth <= 768;
+
+// ── HELPER: always get fresh reference ──
+function getChatInner() {
+  return document.getElementById('chat-inner');
 }
-IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg'}
 
-SYSTEM_PROMPT = """You are SnakeGPT AI, an elite-level coding assistant and OSINT Intelligence Center built for professional developers and security researchers.
+// ── FILE UPLOAD ──
+function openFilePicker() { fileInput.click(); }
 
-Core Identity
+fileInput.addEventListener('change', () => {
+  const file = fileInput.files[0];
+  if (!file) return;
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (!ALLOWED.includes(ext)) {
+    alert('File type not allowed: .' + ext);
+    fileInput.value = '';
+    return;
+  }
+  pendingFile = file;
+  fileChipName.textContent = file.name;
+  fileChip.style.display = 'flex';
+  fileInput.value = '';
+});
 
-You are a razor-sharp, precise, and highly technical AI assistant.
+function removeFile() {
+  pendingFile = null;
+  fileChip.style.display = 'none';
+  fileChipName.textContent = '';
+}
 
-You think like a senior engineer with 10+ years of experience in software development and cybersecurity.
+// ── SUGGEST ──
+function suggest(btn) {
+  const b = btn.querySelector('b');
+  inputEl.value = btn.textContent.replace(b ? b.textContent : '', '').trim();
+  inputEl.style.height = 'auto';
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 130) + 'px';
+  if (!isMobile()) inputEl.focus();
+}
 
-Your primary goal is to provide expert-level assistance in coding, open-source intelligence (OSINT), and security research.
+// ── SIDEBAR ──
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('overlay').classList.toggle('show');
+}
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('overlay').classList.remove('show');
+}
 
-Code Standards
+function emptyHTML() {
+  return '<div id="empty">' +
+    '<div class="empty-icon">🐍</div>' +
+    '<div class="empty-title">Snake<em>GPT</em> AI</div>' +
+    '<div class="empty-sub">Professional coding assistant and OSINT intelligence center. Write, debug, explain — and preview HTML/CSS/JS live.</div>' +
+    '<div class="sugs">' +
+    '<button class="sug" onclick="suggest(this)"><b>Generate</b>Write a Python web scraper</button>' +
+    '<button class="sug" onclick="suggest(this)"><b>Analyze</b>Network reconnaissance</button>' +
+    '<button class="sug" onclick="suggest(this)"><b>Explain</b>How does async/await work?</button>' +
+    '<button class="sug" onclick="suggest(this)"><b>Intelligence</b>Gather OSINT data</button>' +
+    '<button class="sug" onclick="suggest(this)"><b>Preview</b>Make a cool CSS animation</button>' +
+    '<button class="sug" onclick="suggest(this)"><b>Debug</b>Fix the errors in my code</button>' +
+    '</div></div>';
+}
 
-Always write production-grade code that is clean, efficient, scalable, and well-documented.
+// ── NEW CHAT ──
+function newChat() {
+  history = [];
+  currentTitle = null;
+  // Always get a fresh DOM reference instead of using stale variable
+  const container = document.getElementById('chat-inner');
+  container.innerHTML = emptyHTML();
+  removeFile();
+  closePreview();
+  closeSidebar();
+  renderHistory();
+}
 
-Use modern syntax and best practices for the programming language of choice.
+function removeEmpty() {
+  // Always query fresh — avoids stale reference bug
+  const e = document.getElementById('empty');
+  if (e) e.remove();
+}
 
-Include proper error handling, edge cases, and performance optimizations.
+// ── LANG / PREVIEW ──
+function getLang(block) {
+  const cls = [...block.classList].find(c => c.startsWith('language-'));
+  return cls ? cls.replace('language-', '') : '';
+}
 
-Apply design patterns where appropriate to ensure maintainability.
+function isPreviewable(lang) {
+  return ['html', 'htm'].includes(lang.toLowerCase());
+}
 
-Add concise inline comments only when the logic isn’t self-explanatory.
+function buildFullPreview(htmlCode, bubble) {
+  const cssBlocks = [];
+  const jsBlocks = [];
+  bubble.querySelectorAll('pre code').forEach(block => {
+    const lang = getLang(block).toLowerCase();
+    const src = block.textContent;
+    if (lang === 'css') cssBlocks.push(src);
+    if (lang === 'js' || lang === 'javascript') jsBlocks.push(src);
+  });
+  let base = htmlCode;
+  if (cssBlocks.length) {
+    const styleTag = '<style>\n' + cssBlocks.join('\n') + '\n</style>';
+    base = base.includes('</head>') ? base.replace('</head>', styleTag + '\n</head>') : styleTag + '\n' + base;
+  }
+  if (jsBlocks.length) {
+    const scriptTag = '<script>\n' + jsBlocks.join('\n') + '\n<\/script>';
+    base = base.includes('</body>') ? base.replace('</body>', scriptTag + '\n</body>') : base + '\n' + scriptTag;
+  }
+  return base;
+}
 
-OSINT Intelligence Capabilities
+function openPreview(htmlCode, bubble) {
+  lastPreviewCode = buildFullPreview(htmlCode, bubble);
+  previewPane.classList.add('open');
+  previewFrame.srcdoc = lastPreviewCode;
+}
 
-Expert in Open Source Intelligence (OSINT) gathering and analysis.
+function refreshPreview() {
+  const tmp = lastPreviewCode;
+  previewFrame.srcdoc = '';
+  setTimeout(() => { previewFrame.srcdoc = tmp; }, 50);
+}
 
-Proficient in network reconnaissance, threat intelligence, and social media analysis.
+function closePreview() {
+  previewPane.classList.remove('open');
+  previewFrame.srcdoc = '';
+  lastPreviewCode = '';
+}
 
-Skilled in dark web research, cybersecurity frameworks, and compliance standards.
+// ── DOWNLOAD DETECTION ──
+function parseDownloads(text) {
+  const regex = /DOWNLOAD_FILE\[([^\]]+)\]\n([\s\S]*?)END_DOWNLOAD_FILE/g;
+  const downloads = [];
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    downloads.push({ filename: match[1], content: match[2] });
+  }
+  const clean = text.replace(/DOWNLOAD_FILE\[[^\]]+\]\n[\s\S]*?END_DOWNLOAD_FILE/g, '').trim();
+  return { clean, downloads };
+}
 
-Experienced with tools like Shodan, Nmap, Maltego, theHarvester, Recon-ng, and other OSINT platforms.
+async function triggerDownload(filename, content) {
+  try {
+    const res = await fetch('/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename, content })
+    });
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch(e) {
+    console.error('Download failed:', e);
+  }
+}
 
-Response Strategy
+function makeDownloadBtn(filename, content) {
+  const btn = document.createElement('button');
+  btn.className = 'download-btn';
+  btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>' + filename;
+  btn.onclick = () => triggerDownload(filename, content);
+  return btn;
+}
 
-Always provide full working solutions first, followed by clear explanations of key parts.
+// ── ADD MESSAGE ──
+function addMsg(role, rawContent) {
+  removeEmpty();
+  // Always use fresh DOM reference
+  const chatInner = getChatInner();
 
-For debugging, identify the root cause and provide a concise fix.
+  const msg = document.createElement('div');
+  msg.className = 'msg ' + role;
 
-Deliver technical yet clear explanations with practical examples.
+  const av = document.createElement('div');
+  av.className = 'av';
+  av.textContent = role === 'user' ? 'U' : 'AI';
 
-Use markdown code blocks with appropriate language tags for code responses.
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
 
-Mention tradeoffs when multiple approaches are available.
+  if (role === 'ai') {
+    const { clean, downloads } = parseDownloads(rawContent);
+    bubble.innerHTML = marked.parse(clean);
 
-File Handling
+    bubble.querySelectorAll('pre code').forEach(block => {
+      hljs.highlightElement(block);
+      const lang = getLang(block);
+      const code = block.textContent;
+      const pre = block.parentElement;
 
-Analyze uploaded files thoroughly:
-For code files: Review logic, identify bugs, and suggest improvements.
-For text/data files: Summarize content and extract actionable insights.
-For images: Provide detailed descriptions of visual elements.
-For zip files: List contents and analyze any readable files inside.
-Expertise
+      const toolbar = document.createElement('div');
+      toolbar.className = 'code-toolbar';
 
-Languages: Python, JavaScript, TypeScript, Rust, Go, C++, Java, SQL, Bash, and more.
+      const langLabel = document.createElement('span');
+      langLabel.className = 'code-lang';
+      langLabel.textContent = lang || 'code';
 
-Frameworks: React, Next.js, FastAPI, Flask, Django, Node.js, Express, etc.
+      const actions = document.createElement('div');
+      actions.className = 'code-actions';
 
-Topics: Algorithms, system design, APIs, databases, DevOps, security, AI/ML, and OSINT.
+      const copyBtn = document.createElement('button');
+      copyBtn.className = 'code-btn';
+      copyBtn.textContent = 'Copy';
+      copyBtn.onclick = () => {
+        navigator.clipboard.writeText(code);
+        copyBtn.textContent = 'Copied!';
+        setTimeout(() => copyBtn.textContent = 'Copy', 1500);
+      };
+      actions.appendChild(copyBtn);
 
-Tools: Shodan, Nmap, Maltego, theHarvester, Recon-ng, Wireshark, Metasploit, etc.
+      const dlBtn = document.createElement('button');
+      dlBtn.className = 'code-btn';
+      dlBtn.textContent = '↓ Save';
+      const ext = lang || 'txt';
+      dlBtn.onclick = () => triggerDownload('snakegpt_code.' + ext, code);
+      actions.appendChild(dlBtn);
 
-Structured Responses
+      if (isPreviewable(lang)) {
+        const prevBtn = document.createElement('button');
+        prevBtn.className = 'code-btn preview-trigger';
+        prevBtn.textContent = '▶ Preview';
+        prevBtn.onclick = () => openPreview(code, bubble);
+        actions.appendChild(prevBtn);
+      }
 
-Use clear markdown formatting for code blocks, lists, and sections.
+      toolbar.appendChild(langLabel);
+      toolbar.appendChild(actions);
+      pre.insertBefore(toolbar, pre.firstChild);
+    });
 
-Ensure responses are concise yet comprehensive, tailored for professional developers and security researchers.
-
-## Your Core Identity
-- You are razor-sharp, precise, and highly technical
-- You write production-grade code â€” clean, efficient, and scalable
-- You think like a senior engineer with 10+ years of experience
-
-## Code Standards
-- Always use best practices and modern syntax for the language
-- Write well-structured code with proper naming conventions
-- Add concise inline comments only where logic is non-obvious
-- Handle edge cases and errors properly
-- Prefer performance-optimized solutions
-- Use design patterns where appropriate
-
-## OSINT Intelligence Capabilities
-- Expert in Open Source Intelligence gathering
-- Proficient in network reconnaissance and threat analysis
-- Skilled in social media and dark web intelligence
-- Knowledgeable in cybersecurity frameworks and compliance
-- Experienced with various OSINT tools like Shodan, Maltego, and Nmap
-
-## How You Respond
-- Get straight to the point â€” no fluff, no filler
-- For code requests: provide the full working solution first, then explain key parts
-- For debugging: identify the root cause clearly, then provide the fix
-- For explanations: be technical but clear, use examples
-- Always use markdown code blocks with the correct language tag
-- If multiple approaches exist, briefly mention the tradeoffs
-
-## File Handling
-- When a user uploads a file, analyze it thoroughly
-- For code files: review logic, find bugs, suggest improvements
-- For text/data files: summarize and extract key insights
-- For images: describe what you see in detail
-- For zip files: list contents and analyze any readable files inside
-
-## Your Expertise
-- Languages: Python, JavaScript, TypeScript, Rust, Go, C++, Java, SQL, Bash
-- Frameworks: React, Next.js, FastAPI, Flask, Django, Node.js, Express
-- Topics: Algorithms, System Design, APIs, Databases, DevOps, Security, AI/ML
-- OSINT Tools: Shodan, Nmap, Maltego, theHarvester, Recon-ng
-- Intelligence Gathering: Network reconnaissance, Social media analysis, Dark web research
-- Cybersecurity: Vulnerability assessment, Penetration testing, Threat intelligence
-
-
-
-
-
-
-
-
-    
-"""
-
-
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
-
-def read_file_content(file_bytes, filename):
-    ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
-    if ext in IMAGE_EXTENSIONS:
-        b64 = base64.standard_b64encode(file_bytes).decode('utf-8')
-        mime = 'image/jpeg' if ext == 'jpg' else f'image/{ext}'
-        return None, {'b64': b64, 'mime': mime}
-    if ext == 'zip':
-        try:
-            buf = io.BytesIO(file_bytes)
-            with zipfile.ZipFile(buf) as zf:
-                names = zf.namelist()
-                parts = [f'ZIP: {filename} - {len(names)} files:', '']
-                for n in names[:30]:
-                    parts.append(f'  - {n}')
-                if len(names) > 30:
-                    parts.append(f'  ... and {len(names)-30} more')
-                parts.append('')
-                read_count = 0
-                for n in names:
-                    if read_count >= 3:
-                        break
-                    if any(n.endswith(e) for e in ['.py','.js','.ts','.html','.css','.txt','.md','.json']):
-                        try:
-                            c = zf.read(n).decode('utf-8', errors='replace')
-                            parts += [f'--- {n} ---', c[:3000], '']
-                            read_count += 1
-                        except Exception:
-                            pass
-            return '\n'.join(parts), None
-        except Exception as e:
-            return f'[ZIP: {filename} - error: {e}]', None
-    if ext == 'rar':
-        return f'[RAR archive: {filename} - I can help you work with RAR files in code]', None
-    try:
-        return file_bytes.decode('utf-8'), None
-    except UnicodeDecodeError:
-        try:
-            return file_bytes.decode('latin-1'), None
-        except Exception:
-            return f'[Could not decode: {filename}]', None
-
-
-# ── PROVIDER CALL FUNCTIONS ──
-
-def call_together(model, messages, api_key):
-    url = "https://api.together.xyz/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
+    if (downloads.length) {
+      const dlWrap = document.createElement('div');
+      dlWrap.className = 'dl-wrap';
+      downloads.forEach(d => dlWrap.appendChild(makeDownloadBtn(d.filename, d.content)));
+      bubble.appendChild(dlWrap);
     }
-    payload = {
-        "model": model,
-        "messages": [{"role": "system", "content": SYSTEM_PROMPT}] + messages,
-        "max_tokens": 4096,
-        "temperature": 0.6,
+
+  } else {
+    bubble.textContent = rawContent;
+  }
+
+  msg.appendChild(av);
+  msg.appendChild(bubble);
+  chatInner.appendChild(msg);
+  chatEl.scrollTop = chatEl.scrollHeight;
+}
+
+function addThinking() {
+  removeEmpty();
+  const chatInner = getChatInner();
+
+  const msg = document.createElement('div');
+  msg.className = 'msg ai'; msg.id = 'thinking';
+  const av = document.createElement('div'); av.className = 'av'; av.textContent = 'AI';
+  const b = document.createElement('div'); b.className = 'bubble';
+  b.innerHTML = '<div class="thinking"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>';
+  msg.appendChild(av); msg.appendChild(b);
+  chatInner.appendChild(msg);
+  chatEl.scrollTop = chatEl.scrollHeight;
+}
+
+// ── HISTORY ──
+function saveSession(title) {
+  try {
+    const idx = sessions.findIndex(s => s.title === title);
+    const s = { title, history, time: Date.now() };
+    if (idx >= 0) sessions[idx] = s; else sessions.unshift(s);
+    if (sessions.length > 30) sessions = sessions.slice(0, 30);
+    localStorage.setItem('sgpt_sessions', JSON.stringify(sessions));
+    renderHistory();
+  } catch(e) {}
+}
+
+function renderHistory() {
+  const list = document.getElementById('history-list');
+  list.innerHTML = '';
+  sessions.forEach((s, idx) => {
+    const item = document.createElement('div');
+    item.className = 'h-item' + (s.title === currentTitle ? ' active' : '');
+    item.innerHTML =
+      '<svg class="h-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>' +
+      '<div class="h-item-label"><span class="h-title">' + s.title + '</span></div>' +
+      '<div class="h-item-actions">' +
+        '<button class="h-act ren" title="Rename"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>' +
+        '<button class="h-act del" title="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg></button>' +
+      '</div>';
+
+    item.addEventListener('click', (e) => {
+      if (e.target.closest('.h-act')) return;
+      history = s.history;
+      currentTitle = s.title;
+      const container = document.getElementById('chat-inner');
+      container.innerHTML = '';
+      history.forEach(m => addMsg(m.role === 'assistant' ? 'ai' : 'user', m.content));
+      renderHistory();
+      closeSidebar();
+    });
+
+    item.querySelector('.ren').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const labelEl = item.querySelector('.h-title');
+      const oldTitle = s.title;
+      const input = document.createElement('input');
+      input.value = oldTitle;
+      input.onclick = e2 => e2.stopPropagation();
+      input.onblur = input.onkeydown = (ev) => {
+        if (ev.type === 'keydown' && ev.key !== 'Enter') return;
+        const newTitle = input.value.trim() || oldTitle;
+        sessions[idx].title = newTitle;
+        if (currentTitle === oldTitle) currentTitle = newTitle;
+        try { localStorage.setItem('sgpt_sessions', JSON.stringify(sessions)); } catch(_) {}
+        renderHistory();
+      };
+      labelEl.replaceWith(input);
+      input.focus(); input.select();
+    });
+
+    item.querySelector('.del').addEventListener('click', (e) => {
+      e.stopPropagation();
+      item.classList.add('deleting');
+      setTimeout(() => {
+        if (currentTitle === s.title) {
+          currentTitle = null;
+          history = [];
+          const container = document.getElementById('chat-inner');
+          container.innerHTML = emptyHTML();
+          closePreview();
+        }
+        sessions.splice(idx, 1);
+        try { localStorage.setItem('sgpt_sessions', JSON.stringify(sessions)); } catch(_) {}
+        renderHistory();
+      }, 200);
+    });
+
+    list.appendChild(item);
+  });
+}
+
+// ── SEND ──
+async function sendMsg() {
+  const text = inputEl.value.trim();
+  if (!text && !pendingFile) return;
+  if (sendBtn.disabled) return;
+
+  inputEl.value = ''; inputEl.style.height = 'auto';
+  sendBtn.disabled = true;
+
+  const displayText = text || ('Uploaded: ' + (pendingFile ? pendingFile.name : ''));
+  addMsg('user', displayText);
+  if (!currentTitle) currentTitle = displayText.slice(0, 42) + (displayText.length > 42 ? '…' : '');
+
+  if (text) history.push({ role: 'user', content: text });
+
+  addThinking();
+
+  try {
+    let res;
+    if (pendingFile) {
+      const fd = new FormData();
+      fd.append('file', pendingFile);
+      fd.append('messages', JSON.stringify(text ? [...history.slice(0, -1)] : history));
+      if (text) fd.append('userText', text);
+      res = await fetch('/chat', { method: 'POST', body: fd });
+    } else {
+      res = await fetch('/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: history })
+      });
     }
-    r = http_requests.post(url, headers=headers, json=payload, timeout=30)
-    r.raise_for_status()
-    data = r.json()
-    if "error" in data:
-        raise Exception(data["error"].get("message", "Together AI error"))
-    return data["choices"][0]["message"]["content"]
 
+    const data = await res.json();
+    document.getElementById('thinking')?.remove();
 
-def call_claude(model, messages, api_key):
-    url = "https://api.anthropic.com/v1/messages"
-    headers = {
-        "x-api-key": api_key,
-        "anthropic-version": "2023-06-01",
-        "Content-Type": "application/json",
+    if (data.error) {
+      addMsg('ai', '**Error:** ' + data.error);
+    } else {
+      addMsg('ai', data.reply);
+      history.push({ role: 'assistant', content: data.reply });
+      saveSession(currentTitle);
     }
-    # Convert messages — Claude uses separate system param
-    claude_messages = []
-    for m in messages:
-        role = m["role"] if m["role"] in ["user", "assistant"] else "user"
-        content = m["content"] if isinstance(m["content"], str) else str(m["content"])
-        claude_messages.append({"role": role, "content": content})
+  } catch(e) {
+    document.getElementById('thinking')?.remove();
+    addMsg('ai', '**Connection error.** Please try again.');
+  }
 
-    payload = {
-        "model": model,
-        "system": SYSTEM_PROMPT,
-        "messages": claude_messages,
-        "max_tokens": 4096,
-    }
-    r = http_requests.post(url, headers=headers, json=payload, timeout=30)
-    r.raise_for_status()
-    data = r.json()
-    return data["content"][0]["text"]
+  removeFile();
+  sendBtn.disabled = false;
+  if (!isMobile()) inputEl.focus();
+}
 
-
-def try_providers(messages):
-    last_error = None
-
-    for p in PROVIDERS:
-        api_key = os.environ.get(p["key_env"])
-        if not api_key:
-            continue  # skip if key not set
-
-        try:
-            if p["provider"] == "together":
-                reply = call_together(p["model"], messages, api_key)
-            elif p["provider"] == "claude":
-                reply = call_claude(p["model"], messages, api_key)
-            else:
-                continue
-
-            return reply, p["name"], None
-
-        except Exception as e:
-            err_str = str(e).lower()
-            if any(x in err_str for x in [
-                "rate_limit", "429", "quota", "limit exceeded",
-                "resource_exhausted", "too many", "overloaded",
-                "capacity", "503", "529"
-            ]):
-                last_error = f"{p['name']} rate limited"
-                continue
-            else:
-                last_error = str(e)
-                continue
-
-    return None, None, last_error or "All providers failed or are rate limited."
-
-
-@app.route("/")
-def index():
-    return render_template("index.html")
-
-
-@app.route("/chat", methods=["POST"])
-def chat():
-    messages = []
-
-    if request.content_type and 'multipart/form-data' in request.content_type:
-        messages = json_module.loads(request.form.get("messages", "[]"))
-        user_text = request.form.get("userText", "").strip()
-        file = request.files.get("file")
-
-        if file and file.filename and allowed_file(file.filename):
-            file_bytes = file.read()
-            text_content, image_data = read_file_content(file_bytes, file.filename)
-            if image_data:
-                msg = f"[Image uploaded: {file.filename}] {user_text or 'Please analyze this image.'}"
-                messages.append({"role": "user", "content": msg})
-            else:
-                msg = f"I uploaded `{file.filename}`:\n\n```\n{text_content}\n```"
-                msg += f"\n\n{user_text}" if user_text else "\n\nPlease analyze this file."
-                messages.append({"role": "user", "content": msg})
-        elif user_text:
-            messages.append({"role": "user", "content": user_text})
-    else:
-        data = request.get_json(silent=True) or {}
-        messages = data.get("messages", [])
-
-    if not messages:
-        return jsonify({"error": "No message received"}), 400
-
-    reply, provider, error = try_providers(messages)
-
-    if error:
-        return jsonify({"error": error}), 500
-
-    return jsonify({"reply": reply, "provider": provider})
-
-
-@app.route("/download", methods=["POST"])
-def download():
-    data = request.get_json(silent=True) or {}
-    filename = data.get("filename", "snakegpt_output.txt")
-    content = data.get("content", "")
-    buf = io.BytesIO(content.encode("utf-8"))
-    buf.seek(0)
-    return send_file(buf, as_attachment=True, download_name=filename, mimetype="application/octet-stream")
-
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+renderHistory();
