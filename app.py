@@ -9,8 +9,9 @@ import requests as http_requests
 app = Flask(__name__)
 
 # ── AI PROVIDERS CONFIG ──
-# 4 Together AI (free forever) + 1 Gemini 2.5 Pro
+# 4 Together AI (free forever) + 1 OpenRouter + 1 Gemini 2.5 Pro
 # Get Together AI keys: api.together.ai → Settings → API Keys
+# Get OpenRouter key: openrouter.ai → Keys
 # Get Gemini key: aistudio.google.com → Get API Key
 PROVIDERS = [
     # ── TOGETHER AI (free forever, never expires) ──
@@ -39,11 +40,19 @@ PROVIDERS = [
         "key_env": "TOGETHER_API_KEY_4",
     },
 
+    # ── OPENROUTER (free model) ──
+    {
+        "name": "Qwen3 Coder 480B",
+        "provider": "openrouter",
+        "model": "qwen/qwen3-coder-480b-a35b-instruct:free",
+        "key_env": "OPENROUTER_API_KEY",
+    },
+
     # ── GEMINI 2.5 Pro (Google AI Studio) ──
     {
         "name": "Gemini 2.5 Pro",
         "provider": "gemini",
-        "model": "gemini-2.5-pro-exp-03-25",
+        "model": "gemini-2.5-pro-preview-03-25",
         "key_env": "GEMINI_API_KEY",
     },
 ]
@@ -75,7 +84,7 @@ Include proper error handling, edge cases, and performance optimizations.
 
 Apply design patterns where appropriate to ensure maintainability.
 
-Add concise inline comments only when the logic isnâ€™t self-explanatory.
+Add concise inline comments only when the logic isn't self-explanatory.
 
 OSINT Intelligence Capabilities
 
@@ -106,6 +115,7 @@ For code files: Review logic, identify bugs, and suggest improvements.
 For text/data files: Summarize content and extract actionable insights.
 For images: Provide detailed descriptions of visual elements.
 For zip files: List contents and analyze any readable files inside.
+
 Expertise
 
 Languages: Python, JavaScript, TypeScript, Rust, Go, C++, Java, SQL, Bash, and more.
@@ -121,53 +131,6 @@ Structured Responses
 Use clear markdown formatting for code blocks, lists, and sections.
 
 Ensure responses are concise yet comprehensive, tailored for professional developers and security researchers.
-
-## Your Core Identity
-- You are razor-sharp, precise, and highly technical
-- You write production-grade code Ã¢â‚¬â€ clean, efficient, and scalable
-- You think like a senior engineer with 10+ years of experience
-
-## Code Standards
-- Always use best practices and modern syntax for the language
-- Write well-structured code with proper naming conventions
-- Add concise inline comments only where logic is non-obvious
-- Handle edge cases and errors properly
-- Prefer performance-optimized solutions
-- Use design patterns where appropriate
-
-## OSINT Intelligence Capabilities
-- Expert in Open Source Intelligence gathering
-- Proficient in network reconnaissance and threat analysis
-- Skilled in social media and dark web intelligence
-- Knowledgeable in cybersecurity frameworks and compliance
-- Experienced with various OSINT tools like Shodan, Maltego, and Nmap
-
-## How You Respond
-- Get straight to the point Ã¢â‚¬â€ no fluff, no filler
-- For code requests: provide the full working solution first, then explain key parts
-- For debugging: identify the root cause clearly, then provide the fix
-- For explanations: be technical but clear, use examples
-- Always use markdown code blocks with the correct language tag
-- If multiple approaches exist, briefly mention the tradeoffs
-
-## File Handling
-- When a user uploads a file, analyze it thoroughly
-- For code files: review logic, find bugs, suggest improvements
-- For text/data files: summarize and extract key insights
-- For images: describe what you see in detail
-- For zip files: list contents and analyze any readable files inside
-
-## Your Expertise
-- Languages: Python, JavaScript, TypeScript, Rust, Go, C++, Java, SQL, Bash
-- Frameworks: React, Next.js, FastAPI, Flask, Django, Node.js, Express
-- Topics: Algorithms, System Design, APIs, Databases, DevOps, Security, AI/ML
-- OSINT Tools: Shodan, Nmap, Maltego, theHarvester, Recon-ng
-- Intelligence Gathering: Network reconnaissance, Social media analysis, Dark web research
-- Cybersecurity: Vulnerability assessment, Penetration testing, Threat intelligence
-
-
-
-
 """
 
 
@@ -239,6 +202,28 @@ def call_together(model, messages, api_key):
     return data["choices"][0]["message"]["content"]
 
 
+def call_openrouter(model, messages, api_key):
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://snakegpt.onrender.com",
+        "X-Title": "SnakeGPT AI",
+    }
+    payload = {
+        "model": model,
+        "messages": [{"role": "system", "content": SYSTEM_PROMPT}] + messages,
+        "max_tokens": 4096,
+        "temperature": 0.6,
+    }
+    r = http_requests.post(url, headers=headers, json=payload, timeout=30)
+    r.raise_for_status()
+    data = r.json()
+    if "error" in data:
+        raise Exception(data["error"].get("message", "OpenRouter error"))
+    return data["choices"][0]["message"]["content"]
+
+
 def call_gemini(model, messages, api_key):
     contents = []
     for m in messages:
@@ -271,6 +256,8 @@ def try_providers(messages):
         try:
             if p["provider"] == "together":
                 reply = call_together(p["model"], messages, api_key)
+            elif p["provider"] == "openrouter":
+                reply = call_openrouter(p["model"], messages, api_key)
             elif p["provider"] == "gemini":
                 reply = call_gemini(p["model"], messages, api_key)
             else:
