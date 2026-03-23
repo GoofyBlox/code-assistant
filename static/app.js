@@ -9,60 +9,42 @@ import requests as http_requests
 app = Flask(__name__)
 
 # ── AI PROVIDERS CONFIG ──
-# Together AI — free forever, keys never expire
-# Get keys at: api.together.ai → Settings → API Keys
-# Create multiple accounts to get more keys
-# Each model has its own unique key_env — set in Render environment variables
+# 4 Together AI (free forever) + 1 Claude (Anthropic)
+# Get Together AI keys: api.together.ai → Settings → API Keys
+# Get Claude key: console.anthropic.com → API Keys
 PROVIDERS = [
+    # ── TOGETHER AI (free forever, never expires) ──
     {
         "name": "LLaMA 3.3 70B",
+        "provider": "together",
         "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
         "key_env": "TOGETHER_API_KEY_1",
     },
     {
         "name": "DeepSeek R1",
+        "provider": "together",
         "model": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free",
         "key_env": "TOGETHER_API_KEY_2",
     },
     {
         "name": "Qwen 2.5 72B",
+        "provider": "together",
         "model": "Qwen/Qwen2.5-72B-Instruct-Turbo",
         "key_env": "TOGETHER_API_KEY_3",
     },
     {
-        "name": "LLaMA 3.1 405B",
-        "model": "meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo",
+        "name": "Qwen 2.5 Coder 32B",
+        "provider": "together",
+        "model": "Qwen/Qwen2.5-Coder-32B-Instruct",
         "key_env": "TOGETHER_API_KEY_4",
     },
+
+    # ── CLAUDE (Anthropic) ──
     {
-        "name": "Gemma 2 27B",
-        "model": "google/gemma-2-27b-it",
-        "key_env": "TOGETHER_API_KEY_5",
-    },
-    {
-        "name": "Mixtral 8x22B",
-        "model": "mistralai/Mixtral-8x22B-Instruct-v0.1",
-        "key_env": "TOGETHER_API_KEY_6",
-    },
-    {
-        "name": "WizardLM 2 8x22B",
-        "model": "microsoft/WizardLM-2-8x22B",
-        "key_env": "TOGETHER_API_KEY_7",
-    },
-    {
-        "name": "LLaMA 3.2 90B Vision",
-        "model": "meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo",
-        "key_env": "TOGETHER_API_KEY_8",
-    },
-    {
-        "name": "Qwen 2.5 Coder 32B",
-        "model": "Qwen/Qwen2.5-Coder-32B-Instruct",
-        "key_env": "TOGETHER_API_KEY_9",
-    },
-    {
-        "name": "DeepSeek Coder V2",
-        "model": "deepseek-ai/DeepSeek-Coder-V2-Instruct",
-        "key_env": "TOGETHER_API_KEY_10",
+        "name": "Claude Sonnet",
+        "provider": "claude",
+        "model": "claude-sonnet-4-6",
+        "key_env": "ANTHROPIC_API_KEY",
     },
 ]
 
@@ -75,9 +57,74 @@ IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg'}
 
 SYSTEM_PROMPT = """You are SnakeGPT AI, an elite-level coding assistant and OSINT Intelligence Center built for professional developers and security researchers.
 
+Core Identity
+
+You are a razor-sharp, precise, and highly technical AI assistant.
+
+You think like a senior engineer with 10+ years of experience in software development and cybersecurity.
+
+Your primary goal is to provide expert-level assistance in coding, open-source intelligence (OSINT), and security research.
+
+Code Standards
+
+Always write production-grade code that is clean, efficient, scalable, and well-documented.
+
+Use modern syntax and best practices for the programming language of choice.
+
+Include proper error handling, edge cases, and performance optimizations.
+
+Apply design patterns where appropriate to ensure maintainability.
+
+Add concise inline comments only when the logic isn’t self-explanatory.
+
+OSINT Intelligence Capabilities
+
+Expert in Open Source Intelligence (OSINT) gathering and analysis.
+
+Proficient in network reconnaissance, threat intelligence, and social media analysis.
+
+Skilled in dark web research, cybersecurity frameworks, and compliance standards.
+
+Experienced with tools like Shodan, Nmap, Maltego, theHarvester, Recon-ng, and other OSINT platforms.
+
+Response Strategy
+
+Always provide full working solutions first, followed by clear explanations of key parts.
+
+For debugging, identify the root cause and provide a concise fix.
+
+Deliver technical yet clear explanations with practical examples.
+
+Use markdown code blocks with appropriate language tags for code responses.
+
+Mention tradeoffs when multiple approaches are available.
+
+File Handling
+
+Analyze uploaded files thoroughly:
+For code files: Review logic, identify bugs, and suggest improvements.
+For text/data files: Summarize content and extract actionable insights.
+For images: Provide detailed descriptions of visual elements.
+For zip files: List contents and analyze any readable files inside.
+Expertise
+
+Languages: Python, JavaScript, TypeScript, Rust, Go, C++, Java, SQL, Bash, and more.
+
+Frameworks: React, Next.js, FastAPI, Flask, Django, Node.js, Express, etc.
+
+Topics: Algorithms, system design, APIs, databases, DevOps, security, AI/ML, and OSINT.
+
+Tools: Shodan, Nmap, Maltego, theHarvester, Recon-ng, Wireshark, Metasploit, etc.
+
+Structured Responses
+
+Use clear markdown formatting for code blocks, lists, and sections.
+
+Ensure responses are concise yet comprehensive, tailored for professional developers and security researchers.
+
 ## Your Core Identity
 - You are razor-sharp, precise, and highly technical
-- You write production-grade code — clean, efficient, and scalable
+- You write production-grade code â€” clean, efficient, and scalable
 - You think like a senior engineer with 10+ years of experience
 
 ## Code Standards
@@ -96,7 +143,7 @@ SYSTEM_PROMPT = """You are SnakeGPT AI, an elite-level coding assistant and OSIN
 - Experienced with various OSINT tools like Shodan, Maltego, and Nmap
 
 ## How You Respond
-- Get straight to the point — no fluff, no filler
+- Get straight to the point â€” no fluff, no filler
 - For code requests: provide the full working solution first, then explain key parts
 - For debugging: identify the root cause clearly, then provide the fix
 - For explanations: be technical but clear, use examples
@@ -117,6 +164,15 @@ SYSTEM_PROMPT = """You are SnakeGPT AI, an elite-level coding assistant and OSIN
 - OSINT Tools: Shodan, Nmap, Maltego, theHarvester, Recon-ng
 - Intelligence Gathering: Network reconnaissance, Social media analysis, Dark web research
 - Cybersecurity: Vulnerability assessment, Penetration testing, Threat intelligence
+
+
+
+
+
+
+
+
+    
 """
 
 
@@ -166,7 +222,8 @@ def read_file_content(file_bytes, filename):
             return f'[Could not decode: {filename}]', None
 
 
-# ── TOGETHER AI CALL ──
+# ── PROVIDER CALL FUNCTIONS ──
+
 def call_together(model, messages, api_key):
     url = "https://api.together.xyz/v1/chat/completions"
     headers = {
@@ -187,6 +244,32 @@ def call_together(model, messages, api_key):
     return data["choices"][0]["message"]["content"]
 
 
+def call_claude(model, messages, api_key):
+    url = "https://api.anthropic.com/v1/messages"
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+    }
+    # Convert messages — Claude uses separate system param
+    claude_messages = []
+    for m in messages:
+        role = m["role"] if m["role"] in ["user", "assistant"] else "user"
+        content = m["content"] if isinstance(m["content"], str) else str(m["content"])
+        claude_messages.append({"role": role, "content": content})
+
+    payload = {
+        "model": model,
+        "system": SYSTEM_PROMPT,
+        "messages": claude_messages,
+        "max_tokens": 4096,
+    }
+    r = http_requests.post(url, headers=headers, json=payload, timeout=30)
+    r.raise_for_status()
+    data = r.json()
+    return data["content"][0]["text"]
+
+
 def try_providers(messages):
     last_error = None
 
@@ -196,7 +279,13 @@ def try_providers(messages):
             continue  # skip if key not set
 
         try:
-            reply = call_together(p["model"], messages, api_key)
+            if p["provider"] == "together":
+                reply = call_together(p["model"], messages, api_key)
+            elif p["provider"] == "claude":
+                reply = call_claude(p["model"], messages, api_key)
+            else:
+                continue
+
             return reply, p["name"], None
 
         except Exception as e:
@@ -233,7 +322,6 @@ def chat():
             file_bytes = file.read()
             text_content, image_data = read_file_content(file_bytes, file.filename)
             if image_data:
-                # Together AI supports image via URL only, send as text description
                 msg = f"[Image uploaded: {file.filename}] {user_text or 'Please analyze this image.'}"
                 messages.append({"role": "user", "content": msg})
             else:
